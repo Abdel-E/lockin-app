@@ -9,7 +9,21 @@ import './index.css';
 import SetupModal from './components/SetupModal';
 
 const GC_ENABLED = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
-const GoogleConnect = GC_ENABLED ? lazy(() => import('./components/GoogleConnect')) : null;
+// Robust lazy import: fallback to a tiny placeholder if the module fails to fetch in dev
+const GoogleConnect = GC_ENABLED
+  ? lazy(async () => {
+      try {
+        return await import('./components/GoogleConnect.jsx');
+      } catch (e) {
+        console.error('Failed to load GoogleConnect module:', e);
+        return { default: ({ isDarkMode }) => (
+          <span className={`text-xs opacity-70 ${isDarkMode ? 'text-gray-300' : 'text-[#54473f]'}`}>
+            Google sync off
+          </span>
+        ) };
+      }
+    })
+  : null;
 
 function App() {
   const [currentSession, setCurrentSession] = useState(null);
