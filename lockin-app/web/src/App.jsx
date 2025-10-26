@@ -6,6 +6,7 @@ import { Calendar } from './components/Calendar';
 import OnboardingModal from './components/OnboardingModal';
 import { Jarvis } from './components/Jarvis';
 import './index.css';
+import SetupModal from './components/SetupModal';
 
 const GC_ENABLED = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
 const GoogleConnect = GC_ENABLED ? lazy(() => import('./components/GoogleConnect')) : null;
@@ -24,6 +25,14 @@ function App() {
     const sessions = storage.getSessions();
     const activeSession = sessions.find((s) => !s.endTime);
     if (activeSession) setCurrentSession(activeSession);
+
+    // one-time migration: mark schedule-sourced blocks as class
+    const plans = storage.getPlans?.() ?? [];
+    const updated = plans.map(p => (p.source === 'schedule' && p.type !== 'class') ? { ...p, type: 'class' } : p);
+    if (updated.some((p, i) => p !== plans[i])) {
+      storage.setPlans?.(updated);
+      setPlanVersion(v => v + 1);
+    }
   }, []);
 
   useEffect(() => {
@@ -218,6 +227,7 @@ function App() {
                 ) : (
                   <span className="text-xs opacity-70">Google sync off</span>
                 )}
+                {/* Upload button removed; schedule import is now in Setup */}
                 <button
                   onClick={clearCalendar}
                   className={`text-xs px-3 py-1 rounded-full border ${
@@ -250,7 +260,11 @@ function App() {
                   Setup
                 </button>
               </div>
-              <Jarvis isDarkMode={isDarkMode} />
+              <Jarvis
+                isDarkMode={isDarkMode}
+                weekStart={weekStart}
+                onClassesImported={() => setPlanVersion((v) => v + 1)}
+              />
             </section>
 
             {/* To-do section unchanged */}
@@ -288,6 +302,15 @@ function App() {
           </div>
         </div>
       </main>
+
+      {/* Setup modal (includes Class Schedule import) */}
+      <SetupModal
+        open={showOnboarding}
+        isDarkMode={isDarkMode}
+        weekStart={weekStart}
+        onImported={() => setPlanVersion(v => v + 1)}
+        onClose={() => setShowOnboarding(false)}
+      />
 
       {/* error */}
       {error && <div className="fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50">⚠️ {error}</div>}

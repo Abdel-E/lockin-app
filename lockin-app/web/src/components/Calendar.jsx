@@ -12,7 +12,7 @@ function startOfToday() {
   return d;
 }
 
-export function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 }) {
+export default function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 }) {
   const [active, setActive] = useState(0);            // index into rolling 7 days
   const [viewMode, setViewMode] = useState('week');   // 'week' | 'day'
   const [startDate] = useState(() => startOfToday());
@@ -50,9 +50,9 @@ export function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 
   }, []);
   // Also refresh immediately when storage broadcasts a change
   useEffect(() => {
-    const onPlans = () => setPlans(storage.getPlans());
-    window.addEventListener('lockin:plans', onPlans);
-    return () => window.removeEventListener('lockin:plans', onPlans);
+    const onPlanChange = () => setPlans(storage.getPlans());
+    window.addEventListener('lockin:plans', onPlanChange);
+    return () => window.removeEventListener('lockin:plans', onPlanChange);
   }, []);
 
   const nowOffset = () => {
@@ -81,6 +81,37 @@ export function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 
 
     return { top: `${top}px`, height: `${height}px`, left, width };
   };
+
+  function Block({ block, isDarkMode }) {
+    const isClass = block.type === 'class' || block.source === 'schedule';
+    const classBg = isDarkMode ? 'bg-[#6f001a]/90' : 'bg-[#800018]/90';
+    const classText = 'text-white';
+    const defaultBg = isDarkMode ? 'bg-emerald-600/90' : 'bg-green-600/90';
+    const defaultText = 'text-white';
+
+    const bgClass = isClass ? classBg : defaultBg;
+    const textClass = isClass ? classText : defaultText;
+
+    return (
+      <div
+        className={`absolute rounded-md px-2 py-1 overflow-hidden ${bgClass} ${textClass} border border-black/10`}
+        style={{
+          top: block._top,
+          height: block._height,
+          left: block._left,
+          width: block._width
+        }}
+        title={block.title}
+      >
+        <div className="text-[11px] leading-4 font-semibold truncate">
+          {block.title}
+        </div>
+        {block.subtitle ? (
+          <div className="text-[10px] opacity-90 truncate">{block.subtitle}</div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -173,8 +204,10 @@ export function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 
 
           {/* Planned blocks */}
           <div className="absolute inset-0 pointer-events-none">
+            {/* Study blocks (existing logic with p.startTime/p.duration) */}
             {plans
               .filter((p) => {
+                if (!p.startTime) return false;
                 const dt = new Date(p.startTime);
                 const windowStart = new Date(startDate); windowStart.setHours(0,0,0,0);
                 if (viewMode === 'day') {
@@ -194,34 +227,47 @@ export function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 
                   <div
                     key={p.id}
                     className={`absolute rounded-md shadow-sm overflow-hidden ${
-                      isDarkMode
-                        ? 'border border-[#2a2c2f] text-gray-100'
-                        : 'border border-[#cbbfb2] text-[#2e2e2e]'
+                      isDarkMode ? 'border border-[#2a2c2f] text-gray-100' : 'border border-[#cbbfb2] text-[#2e2e2e]'
                     }`}
-                    style={{
-                      ...style,
-                      background: isDarkMode
-                        ? 'rgba(125, 211, 252, 0.15)'
-                        : 'rgba(125, 211, 252, 0.3)',
-                    }}
+                    style={{ ...style, background: isDarkMode ? 'rgba(125, 211, 252, 0.15)' : 'rgba(125, 211, 252, 0.3)' }}
                   >
-                    {isActive && (
-                      <div
-                        className="absolute left-0 right-0 bottom-0 bg-emerald-500/40"
-                        style={{ height: `${pct * 100}%` }}
-                      />
-                    )}
+                    {isActive && <div className="absolute left-0 right-0 bottom-0 bg-emerald-500/40" style={{ height: `${pct * 100}%` }} />}
                     <div className="relative px-2 py-1 text-[11px] leading-4">
                       <div className="font-medium truncate">{p.title}</div>
                       <div className="opacity-70 truncate">
-                        {new Date(p.startTime)
-                          .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                          .toLowerCase()}{' '}
-                        · {(p.duration / 36e5).toFixed(1)}h
+                        {new Date(p.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase()} · {(p.duration / 36e5).toFixed(1)}h
                       </div>
                     </div>
                   </div>
                 );
+              })}
+
+            {/* CLASS blocks (from schedule upload via Gemini) */}
+            {plans
+              .filter((p) => (p.type === 'class' || p.source === 'schedule') && p.startMs != null && p.endMs != null)
+              .filter((p) => {
+                const dt = new Date(p.startMs);
+                const windowStart = new Date(startDate); windowStart.setHours(0,0,0,0);
+                if (viewMode === 'day') {
+                  const d = new Date(dates[active]); d.setHours(0,0,0,0);
+                  const next = new Date(d); next.setDate(next.getDate() + 1);
+                  return dt >= d && dt < next;
+                }
+                const end = new Date(windowStart); end.setDate(end.getDate() + 7);
+                return dt >= windowStart && dt < end;
+              })
+              .map((p) => {
+                const duration = Math.max(0, p.endMs - p.startMs);
+                const style = planStyle(p.startMs, duration);
+                if (!style) return null;
+                const block = {
+                  id: p.id,
+                  title: p.title || 'CLASS',
+                  subtitle: p.subtitle || '',
+                  _top: style.top, _height: style.height, _left: style.left, _width: style.width,
+                  type: 'class', source: 'schedule'
+                };
+                return <Block key={p.id} block={block} isDarkMode={isDarkMode} />;
               })}
           </div>
         </div>
@@ -229,3 +275,5 @@ export function Calendar({ isDarkMode, activeTaskId = null, activeElapsedMs = 0 
     </div>
   );
 }
+
+export { Calendar };
