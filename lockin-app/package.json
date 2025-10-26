@@ -1,0 +1,14 @@
+{
+  "name": "lockin-app",
+  "version": "1.0.0",
+  "description": "Cross-device study sessions with auto-end accountability",
+  "private": true,
+  "scripts": {
+    "server": "cd sync-server && npm start",
+    "web": "cd web && npm run dev",
+    "mobile": "cd mobile && npm start"
+  },
+  "keywords": ["study", "productivity", "sync", "hackathon"],
+  "author": "",
+  "license": "MIT"
+}
