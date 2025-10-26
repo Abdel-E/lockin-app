@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useMemo, useEffect, useState } from 'react';
 import { storage } from './utils/storage';
 import { initializeSeedData } from './utils/seedData';
 import { TaskList } from './components/TaskList';
@@ -6,6 +6,10 @@ import { Calendar } from './components/Calendar';
 import OnboardingModal from './components/OnboardingModal';
 import { Jarvis } from './components/Jarvis';
 import './index.css';
+import SetupModal from './components/SetupModal';
+
+const GC_ENABLED = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const GoogleConnect = GC_ENABLED ? lazy(() => import('./components/GoogleConnect')) : null;
 
 function App() {
   const [currentSession, setCurrentSession] = useState(null);
@@ -21,6 +25,14 @@ function App() {
     const sessions = storage.getSessions();
     const activeSession = sessions.find((s) => !s.endTime);
     if (activeSession) setCurrentSession(activeSession);
+
+    // one-time migration: mark schedule-sourced blocks as class
+    const plans = storage.getPlans?.() ?? [];
+    const updated = plans.map(p => (p.source === 'schedule' && p.type !== 'class') ? { ...p, type: 'class' } : p);
+    if (updated.some((p, i) => p !== plans[i])) {
+      storage.setPlans?.(updated);
+      setPlanVersion(v => v + 1);
+    }
   }, []);
 
   useEffect(() => {
@@ -88,7 +100,8 @@ function App() {
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const dailyStats = storage.getDailyStats(todayStr);
   const elapsedMs = currentSession ? Date.now() - new Date(currentSession.startTime).getTime() : 0;
-  const hoursCompletedToday = (dailyStats.totalTime + elapsedMs) / 36e5;
+  // Use totalMs from storage stats; guard against NaN
+  const hoursCompletedToday = ((dailyStats?.totalMs || 0) + elapsedMs) / 36e5;
 
   // Target = sum of hoursRemaining for tasks due today; fallback to 6h if none
   const tasksToday = storage.getTasks().filter((t) => t.dueDate === todayStr);
@@ -113,8 +126,14 @@ function App() {
     return 'bg-emerald-500';
   };
 
+  // Weekly progress toward target hours (safe against NaN/div-by-zero)
   const week = storage.getWeekStats(new Date());
-  const weekPct = Math.round((week.totalTime / 36e5) / week.targetHours * 100);
+  const prefs = storage.getPreferences?.() || {};
+  const weeklyTargetHours = Number(prefs.weeklyTargetHours) || 12; // fallback to 12h/week
+  const weekHours = Number((week.totalMs || 0) / 36e5) || 0;
+  const weekPct = weeklyTargetHours > 0
+    ? Math.round(Math.max(0, Math.min((weekHours / weeklyTargetHours) * 100, 100)))
+    : 0;
 
   const formatHMS = (ms) => {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -125,10 +144,25 @@ function App() {
   };
 
   const clearCalendar = () => {
-    if (!window.confirm('Clear all calendar blocks? Tasks will be kept.')) return;
+    if (!window.confirm('Clear all calendar blocks and to-dos?')) return;
+    // Clear calendar blocks
     storage.clearPlans?.() ?? storage.setPlans([]);
+
+    // Also clear all tasks
+    try {
+      const tasks = storage.getTasks?.() || [];
+      for (const t of tasks) storage.deleteTask?.(t.id);
+    } catch {}
+
     setPlanVersion(v => v + 1);
   };
+
+  const weekStart = useMemo(() => {
+    const d = new Date(); d.setHours(0,0,0,0);
+    const offset = (d.getDay() + 1) % 7; // Sat as first day
+    d.setDate(d.getDate() - offset);
+    return d;
+  }, []);
 
   return (
     <div className={`${isDarkMode ? 'bg-[#0f1011]' : 'bg-[#efe8e1]'} transition-colors overflow-x-hidden`}>
@@ -200,15 +234,25 @@ function App() {
           <section className={`${isDarkMode ? 'bg-[#141517] border-[#2a2c2f]' : 'bg-[#d9cec3] border-[#cbbfb2]'} border rounded-2xl p-5 overflow-hidden`}>
             <div className="flex items-center justify-between mb-3">
               <h2 className={`font-serifTitle ${isDarkMode ? 'text-white' : 'text-[#3b312a]'}`}>Calendar</h2>
-              <button
-                onClick={clearCalendar}
-                className={`text-xs px-3 py-1 rounded-full border ${
-                  isDarkMode ? 'bg-[#1b1d1f] text-gray-100 border-[#2a2c2f]' : 'bg-[#e1d8cf] text-[#2e2e2e] border-[#cbbfb2]'
-                }`}
-                title="Remove all calendar blocks"
-              >
-                Clear
-              </button>
+              <div className="flex items-center gap-3">
+                {GC_ENABLED ? (
+                  <Suspense fallback={null}>
+                    <GoogleConnect weekStart={weekStart} isDarkMode={isDarkMode} />
+                  </Suspense>
+                ) : (
+                  <span className="text-xs opacity-70">Google sync off</span>
+                )}
+                {/* Upload button removed; schedule import is now in Setup */}
+                <button
+                  onClick={clearCalendar}
+                  className={`text-xs px-3 py-1 rounded-full border ${
+                    isDarkMode ? 'bg-[#1b1d1f] text-gray-100 border-[#2a2c2f]' : 'bg-[#e1d8cf] text-[#2e2e2e] border-[#cbbfb2]'
+                  }`}
+                  title="Remove all calendar blocks"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
             <Calendar
               key={planVersion}
@@ -231,7 +275,11 @@ function App() {
                   Setup
                 </button>
               </div>
-              <Jarvis isDarkMode={isDarkMode} />
+              <Jarvis
+                isDarkMode={isDarkMode}
+                weekStart={weekStart}
+                onClassesImported={() => setPlanVersion((v) => v + 1)}
+              />
             </section>
 
             {/* To-do section unchanged */}
@@ -269,6 +317,15 @@ function App() {
           </div>
         </div>
       </main>
+
+      {/* Setup modal (includes Class Schedule import) */}
+      <SetupModal
+        open={showOnboarding}
+        isDarkMode={isDarkMode}
+        weekStart={weekStart}
+        onImported={() => setPlanVersion(v => v + 1)}
+        onClose={() => setShowOnboarding(false)}
+      />
 
       {/* error */}
       {error && <div className="fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50">⚠️ {error}</div>}
