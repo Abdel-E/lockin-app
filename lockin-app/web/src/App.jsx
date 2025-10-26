@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useMemo, useEffect, useState } from 'react';
 import { storage } from './utils/storage';
 import { initializeSeedData } from './utils/seedData';
 import { TaskList } from './components/TaskList';
@@ -6,6 +6,9 @@ import { Calendar } from './components/Calendar';
 import OnboardingModal from './components/OnboardingModal';
 import { Jarvis } from './components/Jarvis';
 import './index.css';
+
+const GC_ENABLED = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const GoogleConnect = GC_ENABLED ? lazy(() => import('./components/GoogleConnect')) : null;
 
 function App() {
   const [currentSession, setCurrentSession] = useState(null);
@@ -130,6 +133,13 @@ function App() {
     setPlanVersion(v => v + 1);
   };
 
+  const weekStart = useMemo(() => {
+    const d = new Date(); d.setHours(0,0,0,0);
+    const offset = (d.getDay() + 1) % 7; // Sat as first day
+    d.setDate(d.getDate() - offset);
+    return d;
+  }, []);
+
   return (
     <div className={`${isDarkMode ? 'bg-[#0f1011]' : 'bg-[#efe8e1]'} transition-colors overflow-x-hidden`}>
       {/* Onboarding modal */}
@@ -200,15 +210,24 @@ function App() {
           <section className={`${isDarkMode ? 'bg-[#141517] border-[#2a2c2f]' : 'bg-[#d9cec3] border-[#cbbfb2]'} border rounded-2xl p-5 overflow-hidden`}>
             <div className="flex items-center justify-between mb-3">
               <h2 className={`font-serifTitle ${isDarkMode ? 'text-white' : 'text-[#3b312a]'}`}>Calendar</h2>
-              <button
-                onClick={clearCalendar}
-                className={`text-xs px-3 py-1 rounded-full border ${
-                  isDarkMode ? 'bg-[#1b1d1f] text-gray-100 border-[#2a2c2f]' : 'bg-[#e1d8cf] text-[#2e2e2e] border-[#cbbfb2]'
-                }`}
-                title="Remove all calendar blocks"
-              >
-                Clear
-              </button>
+              <div className="flex items-center gap-3">
+                {GC_ENABLED ? (
+                  <Suspense fallback={null}>
+                    <GoogleConnect weekStart={weekStart} isDarkMode={isDarkMode} />
+                  </Suspense>
+                ) : (
+                  <span className="text-xs opacity-70">Google sync off</span>
+                )}
+                <button
+                  onClick={clearCalendar}
+                  className={`text-xs px-3 py-1 rounded-full border ${
+                    isDarkMode ? 'bg-[#1b1d1f] text-gray-100 border-[#2a2c2f]' : 'bg-[#e1d8cf] text-[#2e2e2e] border-[#cbbfb2]'
+                  }`}
+                  title="Remove all calendar blocks"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
             <Calendar
               key={planVersion}
