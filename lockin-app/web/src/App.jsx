@@ -100,7 +100,8 @@ function App() {
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const dailyStats = storage.getDailyStats(todayStr);
   const elapsedMs = currentSession ? Date.now() - new Date(currentSession.startTime).getTime() : 0;
-  const hoursCompletedToday = (dailyStats.totalTime + elapsedMs) / 36e5;
+  // Use totalMs from storage stats; guard against NaN
+  const hoursCompletedToday = ((dailyStats?.totalMs || 0) + elapsedMs) / 36e5;
 
   // Target = sum of hoursRemaining for tasks due today; fallback to 6h if none
   const tasksToday = storage.getTasks().filter((t) => t.dueDate === todayStr);
@@ -125,8 +126,14 @@ function App() {
     return 'bg-emerald-500';
   };
 
+  // Weekly progress toward target hours (safe against NaN/div-by-zero)
   const week = storage.getWeekStats(new Date());
-  const weekPct = Math.round((week.totalTime / 36e5) / week.targetHours * 100);
+  const prefs = storage.getPreferences?.() || {};
+  const weeklyTargetHours = Number(prefs.weeklyTargetHours) || 12; // fallback to 12h/week
+  const weekHours = Number((week.totalMs || 0) / 36e5) || 0;
+  const weekPct = weeklyTargetHours > 0
+    ? Math.round(Math.max(0, Math.min((weekHours / weeklyTargetHours) * 100, 100)))
+    : 0;
 
   const formatHMS = (ms) => {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -137,8 +144,16 @@ function App() {
   };
 
   const clearCalendar = () => {
-    if (!window.confirm('Clear all calendar blocks? Tasks will be kept.')) return;
+    if (!window.confirm('Clear all calendar blocks and to-dos?')) return;
+    // Clear calendar blocks
     storage.clearPlans?.() ?? storage.setPlans([]);
+
+    // Also clear all tasks
+    try {
+      const tasks = storage.getTasks?.() || [];
+      for (const t of tasks) storage.deleteTask?.(t.id);
+    } catch {}
+
     setPlanVersion(v => v + 1);
   };
 

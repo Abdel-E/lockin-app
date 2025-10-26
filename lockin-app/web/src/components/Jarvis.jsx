@@ -63,7 +63,8 @@ export function Jarvis({ isDarkMode, weekStart, onClassesImported }) {
         title,
         hoursRemaining,
         [priority ? priority.toUpperCase() : null, notes || null].filter(Boolean).join(' • '),
-        dueDate || null
+        dueDate || null,
+        { skipUpsert: true }
       );
 
       if (created && created.id) return created;
@@ -155,10 +156,45 @@ export function Jarvis({ isDarkMode, weekStart, onClassesImported }) {
   function scheduleTaskBlock({ task, hours, dueDate }) {
     if (!task) return false;
 
-    // Prefer the app’s native planner so Calendar sees the block
+    const hrs = Math.max(0.5, Number(hours) || Number(task.hoursRemaining) || 1);
+
+    // If no due date is provided, schedule the block starting at the next 30‑minute mark from now
+    if (!dueDate && typeof storage.addPlanBlock === 'function') {
+      const now = new Date();
+      const start = new Date(now);
+      const m = start.getMinutes();
+      const roundUp = (30 - (m % 30)) % 30;
+      start.setMinutes(m + roundUp, 0, 0);
+
+      // Find the first free 30-min slot today up to 22:00
+      const step = 30 * 60_000;
+      const dayEnd = new Date(start); dayEnd.setHours(22, 0, 0, 0);
+      let chosen = start.getTime();
+      const durMs = Math.max(30 * 60_000, hrs * 36e5);
+      if (typeof storage.isRangeFree === 'function') {
+        let found = null;
+        for (let s = chosen; s + durMs <= dayEnd.getTime(); s += step) {
+          if (storage.isRangeFree(s, s + durMs)) { found = s; break; }
+        }
+        if (found != null) chosen = found;
+      }
+
+      storage.deletePlansForTask?.(task.id);
+      storage.addPlanBlock({
+        title: task.name || task.title || 'Study',
+        taskId: task.id ?? null,
+        subject: task.subject || '',
+        date: new Date(chosen).toLocaleDateString('en-CA'),
+        start: new Date(chosen).toTimeString().slice(0, 5),
+        durationHours: hrs,
+        color: '#7dd3fc',
+      });
+      window.dispatchEvent?.(new Event('lockin:plans'));
+      return true;
+    }
+
+    // Otherwise, use the planner to place around the due date at a reasonable slot
     if (typeof storage.upsertPlanForTask === 'function') {
-      // Ensure the task has the fields planner expects
-      const hrs = Math.max(0.5, Number(hours) || Number(task.hoursRemaining) || 1);
       const next = {
         ...task,
         name: task.name || task.title || 'Task',
@@ -166,70 +202,32 @@ export function Jarvis({ isDarkMode, weekStart, onClassesImported }) {
         estimateHours: task.estimateHours ?? hrs,
         dueDate: dueDate ?? task.dueDate ?? null,
       };
-      // Check occupancy: compute start/end ms the planner would use (upsertPlanForTask uses dueDate->17:00)
-      const day = new Date(next.dueDate || new Date().toISOString().slice(0,10));
-      day.setHours(17,0,0,0);
-      const startMs = new Date(day).getTime();
-      const duration = Math.max(30 * 60_000, (next.estimateHours || hrs) * 36e5);
-      const endMs = startMs + duration;
-      if (typeof storage.isRangeFree === 'function' && !storage.isRangeFree(startMs, endMs)) return false;
-      storage.upsertPlanForTask(next);           // creates/updates the block for this task
+      storage.upsertPlanForTask(next);
       window.dispatchEvent?.(new Event('lockin:plans'));
       return true;
     }
 
-    // Fallback: synthesize a single block
-    const durationHours = Math.max(0.5, Number(hours) || 1);
-    let start = null;
-
-    if (dueDate) {
-      const parts = dueDate.split('-').map(Number);
-      if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
-        start = new Date(parts[0], parts[1] - 1, parts[2], 9, 0, 0, 0);
-      }
-    }
-    if (!start || Number.isNaN(start.getTime())) {
-      start = new Date();
-      start.setHours(start.getHours() + 1, 0, 0, 0);
-    }
-
+    // Final fallback: write a raw plan directly
+    const start = new Date();
+    start.setMinutes(start.getMinutes() + ((30 - (start.getMinutes() % 30)) % 30), 0, 0);
     const startMs = start.getTime();
-    const endMs = startMs + durationHours * 3600000;
-    const planTitle = task.name || task.title || 'Task';
-    const planSubtitle = task.subject || '';
-    const planId = task.id ? `plan-${task.id}` : `plan-${startMs}`;
-
-    if (typeof storage.addPlanBlock === 'function') {
-      storage.deletePlansForTask?.(task.id);
-      storage.addPlanBlock({
-        title: planTitle,
-        taskId: task.id ?? null,
-        subject: planSubtitle,
-        date: start.toLocaleDateString('en-CA'),
-        start: start.toTimeString().slice(0, 5),
-        durationHours,
-        color: '#7dd3fc',
-      });
-      window.dispatchEvent?.(new Event('lockin:plans'));
-      return true;
-    }
-
+    const endMs = startMs + hrs * 36e5;
+    if (typeof storage.isRangeFree === 'function' && !storage.isRangeFree(startMs, endMs)) return false;
     const plans = storage.getPlans?.() || [];
     const plan = {
-      id: planId,
-      title: planTitle,
-      subtitle: planSubtitle,
+      id: task.id ? `plan-${task.id}` : `plan-${startMs}`,
+      title: task.name || task.title || 'Study',
+      subtitle: task.subject || '',
       taskId: task.id ?? null,
-      startTime: start.toISOString(),
+      startTime: new Date(startMs).toISOString(),
       duration: endMs - startMs,
       startMs,
       endMs,
       type: 'task',
       source: 'task',
     };
-    if (typeof storage.isRangeFree === 'function' && !storage.isRangeFree(startMs, endMs)) return false;
     if (typeof storage.setPlans === 'function') {
-      storage.setPlans([...plans.filter((p) => p?.id !== planId), plan]);
+      storage.setPlans([...plans.filter((p) => p?.id !== plan.id), plan]);
       window.dispatchEvent?.(new Event('lockin:plans'));
       return true;
     }
